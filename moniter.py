@@ -6,33 +6,25 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-# =====================================================
 # LOAD ENV
-# =====================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 
 load_dotenv(dotenv_path=ENV_PATH)
 
-# =====================================================
 # AWS VARIABLES
-# =====================================================
 
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 BUCKET_NAME = os.getenv("S3_BUCKET")
 
-# =====================================================
 # SLACK WEBHOOK
-# =====================================================
 
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
-# =====================================================
 # VALIDATION
-# =====================================================
 
 required_vars = {
     "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY,
@@ -52,9 +44,7 @@ if missing_vars:
         f"Missing environment variables: {missing_vars}"
     )
 
-# =====================================================
 # CREATE S3 CLIENT
-# =====================================================
 
 s3_client = boto3.client(
     "s3",
@@ -63,28 +53,46 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-# =====================================================
-# STATE FILE
-# =====================================================
+# STATE STORAGE IN S3
 
-STATE_FILE = "s3_state.json"
+STATE_KEY = "monitoring/s3_state.json"
 
-# =====================================================
 # LOAD PREVIOUS STATE
-# =====================================================
 
-if os.path.exists(STATE_FILE):
+def load_previous_state():
 
-    with open(STATE_FILE, "r") as f:
-        previous_state = json.load(f)
+    try:
 
-else:
+        response = s3_client.get_object(
+            Bucket=BUCKET_NAME,
+            Key=STATE_KEY
+        )
 
-    previous_state = {}
+        return json.loads(
+            response["Body"].read().decode("utf-8")
+        )
 
-# =====================================================
+    except:
+
+        return {}
+
+# SAVE CURRENT STATE
+
+def save_current_state(state):
+
+    s3_client.put_object(
+        Bucket=BUCKET_NAME,
+        Key=STATE_KEY,
+        Body=json.dumps(state)
+    )
+
+# LOAD STATE
+
+previous_state = load_previous_state()
+
 # FETCH S3 OBJECTS
-# =====================================================
+
+print("Fetching S3 objects...")
 
 response = s3_client.list_objects_v2(
     Bucket=BUCKET_NAME,
@@ -94,9 +102,7 @@ response = s3_client.list_objects_v2(
 current_state = {}
 updates_detected = []
 
-# =====================================================
 # DETECT CHANGES
-# =====================================================
 
 for obj in response.get("Contents", []):
 
@@ -105,27 +111,31 @@ for obj in response.get("Contents", []):
 
     current_state[key] = last_modified
 
+    # Ignore state file itself
+    if key == STATE_KEY:
+        continue
+
+    # NEW FILE
     if key not in previous_state:
 
         updates_detected.append(
-            f"🆕 NEW FILE:\n{key}"
+            f"🆕 NEW FILE DETECTED:\n{key}"
         )
 
+    # UPDATED FILE
     elif previous_state[key] != last_modified:
 
         updates_detected.append(
-            f"♻ UPDATED FILE:\n{key}"
+            f"♻ UPDATED FILE DETECTED:\n{key}"
         )
 
-# =====================================================
 # SEND SLACK ALERT
-# =====================================================
 
 if updates_detected:
 
     slack_message = {
         "text": (
-            "*S3 ETL Pipeline Alert*\n\n"
+            "*🚨 S3 ETL Pipeline Alert*\n\n"
             + "\n\n".join(updates_detected)
         )
     }
@@ -150,12 +160,8 @@ else:
 
     print("No changes detected")
 
-# =====================================================
-# SAVE CURRENT STATE
-# =====================================================
+# SAVE UPDATED STATE
 
-with open(STATE_FILE, "w") as f:
+save_current_state(current_state)
 
-    json.dump(current_state, f)
-
-print("State file updated")
+print("S3 monitoring state updated successfully")
