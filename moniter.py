@@ -181,7 +181,7 @@ for obj in all_objects:
 
     parts = key.split("/")
 
-    # VALID:
+    # VALID FORMAT:
     # monitor/20260519_180000/file.json
 
     if len(parts) >= 3:
@@ -243,7 +243,19 @@ if saved_latest_timestamp is None:
             current_timestamp
         ]
 
+    else:
+
+        previous_timestamp = None
+
+        current_timestamp = None
+
+        new_timestamps = []
+
 else:
+
+    previous_timestamp = (
+        saved_latest_timestamp
+    )
 
     new_timestamps = [
 
@@ -256,6 +268,12 @@ else:
 
         current_timestamp = (
             sorted(new_timestamps)[-1]
+        )
+
+    else:
+
+        current_timestamp = (
+            saved_latest_timestamp
         )
 
 updates_detected = len(new_timestamps) > 0
@@ -419,12 +437,18 @@ if updates_detected:
 
             slack_logs.append(log_message)
 
+# ALWAYS SAVE CURRENT TIMESTAMP
+
+if current_timestamp is not None:
+
     save_current_state({
 
         "latest_timestamp":
         current_timestamp
 
     })
+
+if updates_detected:
 
     slack_text = (
 
@@ -443,8 +467,6 @@ if updates_detected:
     )
 
 else:
-
-    current_timestamp = previous_timestamp
 
     slack_text = (
 
