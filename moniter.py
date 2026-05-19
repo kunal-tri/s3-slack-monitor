@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import boto3
 import requests
@@ -203,6 +204,10 @@ all_objects = response.get(
 
 timestamp_folders = set()
 
+timestamp_pattern = re.compile(
+    r"^\d{8}_\d{6}$"
+)
+
 for obj in all_objects:
 
     key = obj["Key"]
@@ -216,18 +221,8 @@ for obj in all_objects:
 
         folder_name = parts[1]
 
-        ignored_folders = [
-            "last_checked",
-            "state",
-            "history"
-        ]
-
-        if (
-            folder_name not in ignored_folders
-            and
-            "_" in folder_name
-            and
-            len(folder_name) == 15
+        if timestamp_pattern.match(
+            folder_name
         ):
 
             timestamp_folders.add(
@@ -239,9 +234,11 @@ timestamp_folders = sorted(
 )
 
 print(
-    f"Valid timestamps found: "
+    f"Valid timestamp folders found: "
     f"{timestamp_folders}"
 )
+
+# FIRST RUN
 
 if last_processed_timestamp is None:
 
@@ -262,16 +259,14 @@ slack_logs = []
 
 processed_rows = []
 
-latest_processed_timestamp = (
-    last_processed_timestamp
-)
+latest_processed_timestamp = None
 
 if new_timestamps:
 
     updates_detected = True
 
     latest_processed_timestamp = (
-        new_timestamps[-1]
+        sorted(new_timestamps)[-1]
     )
 
     print(
@@ -459,6 +454,10 @@ if new_timestamps:
 
 else:
 
+    latest_processed_timestamp = (
+        last_processed_timestamp
+    )
+
     print("No new updates detected")
 
     slack_text = (
@@ -471,7 +470,7 @@ else:
         f"{monitor_checked_at}\n\n"
 
         f"📌 Last Processed Timestamp:\n"
-        f"{last_processed_timestamp}"
+        f"{latest_processed_timestamp}"
     )
 
 last_checked_data = {
