@@ -89,20 +89,42 @@ def load_previous_state():
             Key=STATE_KEY
         )
 
-        return json.loads(
+        state = json.loads(
             response["Body"]
             .read()
             .decode("utf-8")
         )
 
-    except:
+        if (
+            "last_processed_timestamp"
+            not in state
+        ):
+
+            state[
+                "last_processed_timestamp"
+            ] = None
+
+        if (
+            "processed_timestamps"
+            not in state
+        ):
+
+            state[
+                "processed_timestamps"
+            ] = []
+
+        return state
+
+    except Exception:
 
         default_state = {
 
             "last_processed_timestamp":
-            "00000000_000000",
+            None,
 
-            "processed_timestamps": []
+            "processed_timestamps":
+            []
+
         }
 
         save_current_state(default_state)
@@ -154,8 +176,7 @@ def save_processing_history(data):
 previous_state = load_previous_state()
 
 last_processed_timestamp = previous_state.get(
-    "last_processed_timestamp",
-    "00000000_000000"
+    "last_processed_timestamp"
 )
 
 processed_timestamps = previous_state.get(
@@ -188,7 +209,10 @@ for obj in all_objects:
 
     parts = key.split("/")
 
-    if len(parts) >= 2:
+    # VALID FORMAT:
+    # monitor/20260519_153000/file.json
+
+    if len(parts) >= 3:
 
         folder_name = parts[1]
 
@@ -198,7 +222,13 @@ for obj in all_objects:
             "history"
         ]
 
-        if folder_name not in ignored_folders:
+        if (
+            folder_name not in ignored_folders
+            and
+            "_" in folder_name
+            and
+            len(folder_name) == 15
+        ):
 
             timestamp_folders.add(
                 folder_name
@@ -208,12 +238,23 @@ timestamp_folders = sorted(
     timestamp_folders
 )
 
-new_timestamps = [
+print(
+    f"Valid timestamps found: "
+    f"{timestamp_folders}"
+)
 
-    ts for ts in timestamp_folders
+if last_processed_timestamp is None:
 
-    if ts > last_processed_timestamp
-]
+    new_timestamps = timestamp_folders
+
+else:
+
+    new_timestamps = [
+
+        ts for ts in timestamp_folders
+
+        if ts > last_processed_timestamp
+    ]
 
 updates_detected = False
 
@@ -229,16 +270,16 @@ if new_timestamps:
 
     updates_detected = True
 
+    latest_processed_timestamp = (
+        new_timestamps[-1]
+    )
+
     print(
         f"New timestamps found: "
         f"{new_timestamps}"
     )
 
     for timestamp_folder in new_timestamps:
-
-        latest_processed_timestamp = (
-            timestamp_folder
-        )
 
         latest_prefix = (
             f"monitor/"
@@ -386,6 +427,20 @@ if new_timestamps:
 
             slack_logs.append(log_message)
 
+    processed_timestamps.extend(
+        new_timestamps
+    )
+
+    save_current_state({
+
+        "last_processed_timestamp":
+        latest_processed_timestamp,
+
+        "processed_timestamps":
+        processed_timestamps
+
+    })
+
     slack_text = (
 
         "*🚨 ETL PIPELINE UPDATE DETECTED*\n\n"
@@ -401,20 +456,6 @@ if new_timestamps:
 
         + "\n\n".join(slack_logs)
     )
-
-    processed_timestamps.extend(
-        new_timestamps
-    )
-
-    save_current_state({
-
-        "last_processed_timestamp":
-        latest_processed_timestamp,
-
-        "processed_timestamps":
-        processed_timestamps
-
-    })
 
 else:
 
