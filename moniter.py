@@ -6,25 +6,28 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-# LOAD ENV
-
 BASE_DIR = Path(__file__).resolve().parent
+
 ENV_PATH = BASE_DIR / ".env"
 
 load_dotenv(dotenv_path=ENV_PATH)
 
-# AWS VARIABLES
-
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+
+AWS_SECRET_KEY = os.getenv(
+    "AWS_SECRET_ACCESS_KEY"
+)
+
+AWS_REGION = os.getenv(
+    "AWS_REGION",
+    "ap-south-1"
+)
+
 BUCKET_NAME = os.getenv("S3_BUCKET")
 
-# SLACK WEBHOOK
-
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-
-# VALIDATION
+SLACK_WEBHOOK_URL = os.getenv(
+    "SLACK_WEBHOOK_URL"
+)
 
 required_vars = {
     "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY,
@@ -41,10 +44,9 @@ missing_vars = [
 if missing_vars:
 
     raise ValueError(
-        f"Missing environment variables: {missing_vars}"
+        f"Missing environment variables: "
+        f"{missing_vars}"
     )
-
-# CREATE S3 CLIENT
 
 s3_client = boto3.client(
     "s3",
@@ -53,11 +55,7 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-# STATE STORAGE IN S3
-
-STATE_KEY = "monitoring/s3_state.json"
-
-# LOAD PREVIOUS STATE
+STATE_KEY = "monitor/monitor_state.json"
 
 def load_previous_state():
 
@@ -69,99 +67,247 @@ def load_previous_state():
         )
 
         return json.loads(
-            response["Body"].read().decode("utf-8")
+            response["Body"]
+            .read()
+            .decode("utf-8")
         )
 
     except:
 
-        return {}
-
-# SAVE CURRENT STATE
+        return {
+            "last_processed_timestamp": None
+        }
 
 def save_current_state(state):
 
     s3_client.put_object(
         Bucket=BUCKET_NAME,
         Key=STATE_KEY,
-        Body=json.dumps(state)
+        Body=json.dumps(
+            state,
+            indent=4
+        )
     )
-
-# LOAD STATE
 
 previous_state = load_previous_state()
 
-# FETCH S3 OBJECTS
+last_processed_timestamp = previous_state.get(
+    "last_processed_timestamp"
+)
 
-print("Fetching S3 objects...")
+print("Fetching monitoring logs...")
 
 response = s3_client.list_objects_v2(
     Bucket=BUCKET_NAME,
-    Prefix="output/parquet-data/"
+    Prefix="monitor/"
 )
 
-current_state = {}
-updates_detected = []
+all_objects = response.get("Contents", [])
 
-# DETECT CHANGES
+timestamp_folders = set()
 
-for obj in response.get("Contents", []):
+for obj in all_objects:
 
     key = obj["Key"]
-    last_modified = str(obj["LastModified"])
 
-    current_state[key] = last_modified
+    parts = key.split("/")
 
-    # Ignore state file itself
-    if key == STATE_KEY:
-        continue
+    if len(parts) >= 2:
 
-    # NEW FILE
-    if key not in previous_state:
+        timestamp_folders.add(parts[1])
 
-        updates_detected.append(
-            f"🆕 NEW FILE DETECTED:\n{key}"
-        )
+timestamp_folders = sorted(timestamp_folders)
 
-    # UPDATED FILE
-    elif previous_state[key] != last_modified:
+latest_timestamp = None
 
-        updates_detected.append(
-            f"♻ UPDATED FILE DETECTED:\n{key}"
-        )
+if timestamp_folders:
 
-# SEND SLACK ALERT
+    latest_timestamp = timestamp_folders[-1]
 
-if updates_detected:
+print(f"Latest timestamp found: {latest_timestamp}")
 
-    slack_message = {
-        "text": (
-            "*🚨 S3 ETL Pipeline Alert*\n\n"
-            + "\n\n".join(updates_detected)
-        )
-    }
+updates_detected = False
 
-    response = requests.post(
-        SLACK_WEBHOOK_URL,
-        json=slack_message
+slack_logs = []
+
+if latest_timestamp != last_processed_timestamp:
+
+    updates_detected = True
+
+    print("New monitoring logs detected")
+
+    latest_prefix = f"monitor/{latest_timestamp}/"
+
+    latest_response = s3_client.list_objects_v2(
+        Bucket=BUCKET_NAME,
+        Prefix=latest_prefix
     )
 
-    if response.status_code == 200:
+    latest_objects = latest_response.get(
+        "Contents",
+        []
+    )
 
-        print("Slack notification sent successfully")
+    for obj in latest_objects:
 
-    else:
+        key = obj["Key"]
 
-        print(
-            f"Slack Error: {response.status_code}, "
-            f"{response.text}"
+        if not key.endswith(".json"):
+
+            continue
+
+        file_response = s3_client.get_object(
+            Bucket=BUCKET_NAME,
+            Key=key
         )
+
+        monitoring_data = json.loads(
+            file_response["Body"]
+            .read()
+            .decode("utf-8")
+        )
+
+        table_name = monitoring_data.get(
+            "table_name",
+            "unknown"
+        )
+
+        run_timestamp = monitoring_data.get(
+            "run_timestamp",
+            "unknown"
+        )
+
+        total_rows = monitoring_data.get(
+            "total_rows_after_update",
+            0
+        )
+
+        new_count = monitoring_data.get(
+            "new_records_count",
+            0
+        )
+
+        duplicate_count = monitoring_data.get(
+            "duplicate_records_count",
+            0
+        )
+
+        historical_count = monitoring_data.get(
+            "historical_records_count",
+            0
+        )
+
+        new_records = monitoring_data.get(
+            "new_records",
+            []
+        )
+
+        duplicate_records = monitoring_data.get(
+            "duplicate_records",
+            []
+        )
+
+        historical_records = monitoring_data.get(
+            "historical_records",
+            []
+        )
+
+        log_message = (
+            f"\n📊 TABLE: {table_name}"
+            f"\n🕒 Run Time: {run_timestamp}"
+            f"\n📦 Total Rows: {total_rows}"
+            f"\n🆕 New Rows Inserted: {new_count}"
+            f"\n♻ Duplicate Rows Skipped: "
+            f"{duplicate_count}"
+            f"\n🕘 Historical Rows Created: "
+            f"{historical_count}"
+        )
+
+        if new_records:
+
+            log_message += "\n\n🆕 NEW RECORDS:\n"
+
+            for row in new_records[:5]:
+
+                log_message += (
+                    f"{json.dumps(row, default=str)}\n"
+                )
+
+        if duplicate_records:
+
+            log_message += (
+                "\n♻ DUPLICATE RECORDS:\n"
+            )
+
+            for row in duplicate_records[:5]:
+
+                log_message += (
+                    f"{json.dumps(row, default=str)}\n"
+                )
+
+        if historical_records:
+
+            log_message += (
+                "\n🕘 HISTORICAL RECORDS:\n"
+            )
+
+            for row in historical_records[:5]:
+
+                log_message += (
+                    f"{json.dumps(row, default=str)}\n"
+                )
+
+        slack_logs.append(log_message)
+
+    slack_text = (
+
+        "*🚨 ETL PIPELINE UPDATE DETECTED*\n\n"
+
+        f"📁 Monitoring Timestamp Folder:\n"
+        f"{latest_timestamp}\n\n"
+
+        + "\n\n".join(slack_logs)
+    )
+
+    save_current_state({
+
+        "last_processed_timestamp":
+        latest_timestamp
+
+    })
 
 else:
 
-    print("No changes detected")
+    print("No new monitoring logs detected")
 
-# SAVE UPDATED STATE
+    slack_text = (
+        "*✅ ETL MONITOR STATUS*\n\n"
+        "No new updates detected.\n\n"
 
-save_current_state(current_state)
+        f"Last Checked Timestamp:\n"
+        f"{last_processed_timestamp}"
+    )
 
-print("S3 monitoring state updated successfully")
+slack_message = {
+    "text": slack_text
+}
+
+response = requests.post(
+    SLACK_WEBHOOK_URL,
+    json=slack_message
+)
+
+if response.status_code == 200:
+
+    print(
+        "Slack notification sent successfully"
+    )
+
+else:
+
+    print(
+        f"Slack Error: "
+        f"{response.status_code}"
+    )
+
+print("Monitoring completed")
