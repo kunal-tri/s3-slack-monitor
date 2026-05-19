@@ -34,32 +34,6 @@ SLACK_WEBHOOK_URL = os.getenv(
     "SLACK_WEBHOOK_URL"
 )
 
-required_vars = {
-    "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY,
-    "AWS_SECRET_ACCESS_KEY": AWS_SECRET_KEY,
-    "S3_BUCKET": BUCKET_NAME,
-    "SLACK_WEBHOOK_URL": SLACK_WEBHOOK_URL
-}
-
-missing_vars = [
-    key for key, value in required_vars.items()
-    if not value
-]
-
-if missing_vars:
-
-    raise ValueError(
-        f"Missing environment variables: "
-        f"{missing_vars}"
-    )
-
-s3_client = boto3.client(
-    "s3",
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_KEY,
-    region_name=AWS_REGION
-)
-
 STATE_KEY = "monitor/state/monitor_state.json"
 
 LAST_CHECKED_KEY = (
@@ -73,6 +47,13 @@ PROCESS_LOG_KEY = (
 
 TIMESTAMP_REGEX = re.compile(
     r"^\d{8}_\d{6}$"
+)
+
+s3_client = boto3.client(
+    "s3",
+    aws_access_key_id=AWS_ACCESS_KEY,
+    aws_secret_access_key=AWS_SECRET_KEY,
+    region_name=AWS_REGION
 )
 
 def get_ist_time():
@@ -94,18 +75,19 @@ def load_previous_state():
             Key=STATE_KEY
         )
 
-        state = json.loads(
+        return json.loads(
             response["Body"]
             .read()
             .decode("utf-8")
         )
 
-        return state
-
-    except Exception:
+    except:
 
         return {
-            "latest_timestamp": None
+
+            "latest_update_timestamp": None,
+
+            "last_monitor_checked_at": None
         }
 
 def save_current_state(state):
@@ -152,14 +134,18 @@ def save_processing_history(data):
 
 previous_state = load_previous_state()
 
-saved_latest_timestamp = previous_state.get(
-    "latest_timestamp"
+previous_update_timestamp = previous_state.get(
+    "latest_update_timestamp"
 )
 
-monitor_checked_at = get_ist_string()
+last_monitor_checked_at = previous_state.get(
+    "last_monitor_checked_at"
+)
+
+current_monitor_checked_at = get_ist_string()
 
 print(
-    f"[{monitor_checked_at}] "
+    f"[{current_monitor_checked_at}] "
     f"Checking monitoring logs..."
 )
 
@@ -180,9 +166,6 @@ for obj in all_objects:
     key = obj["Key"]
 
     parts = key.split("/")
-
-    # VALID FORMAT:
-    # monitor/20260519_180000/file.json
 
     if len(parts) >= 3:
 
@@ -205,76 +188,28 @@ print(
     f"{timestamp_folders}"
 )
 
-previous_timestamp = saved_latest_timestamp
+latest_update_timestamp = None
 
-current_timestamp = None
+if timestamp_folders:
 
-new_timestamps = []
+    latest_update_timestamp = (
+        timestamp_folders[-1]
+    )
 
-# FIRST RUN
+# ONLY PROCESS NEW FOLDERS
 
-if saved_latest_timestamp is None:
+if previous_update_timestamp is None:
 
-    if len(timestamp_folders) >= 2:
-
-        previous_timestamp = (
-            timestamp_folders[-2]
-        )
-
-        current_timestamp = (
-            timestamp_folders[-1]
-        )
-
-        new_timestamps = [
-            current_timestamp
-        ]
-
-    elif len(timestamp_folders) == 1:
-
-        previous_timestamp = (
-            timestamp_folders[0]
-        )
-
-        current_timestamp = (
-            timestamp_folders[0]
-        )
-
-        new_timestamps = [
-            current_timestamp
-        ]
-
-    else:
-
-        previous_timestamp = None
-
-        current_timestamp = None
-
-        new_timestamps = []
+    new_timestamps = timestamp_folders
 
 else:
-
-    previous_timestamp = (
-        saved_latest_timestamp
-    )
 
     new_timestamps = [
 
         ts for ts in timestamp_folders
 
-        if ts > saved_latest_timestamp
+        if ts > previous_update_timestamp
     ]
-
-    if new_timestamps:
-
-        current_timestamp = (
-            sorted(new_timestamps)[-1]
-        )
-
-    else:
-
-        current_timestamp = (
-            saved_latest_timestamp
-        )
 
 updates_detected = len(new_timestamps) > 0
 
@@ -379,7 +314,7 @@ if updates_detected:
                 f"\n🕒 ETL Run Time: "
                 f"{run_timestamp}"
 
-                f"\n📁 Timestamp Folder: "
+                f"\n📁 Update Timestamp Folder: "
                 f"{timestamp_folder}"
 
                 f"\n📦 Total Rows: "
@@ -437,16 +372,16 @@ if updates_detected:
 
             slack_logs.append(log_message)
 
-# ALWAYS SAVE CURRENT TIMESTAMP
+# ALWAYS SAVE STATE
 
-if current_timestamp is not None:
+save_current_state({
 
-    save_current_state({
+    "latest_update_timestamp":
+    latest_update_timestamp,
 
-        "latest_timestamp":
-        current_timestamp
-
-    })
+    "last_monitor_checked_at":
+    current_monitor_checked_at
+})
 
 if updates_detected:
 
@@ -454,14 +389,17 @@ if updates_detected:
 
         "*🚨 ETL PIPELINE UPDATE DETECTED*\n\n"
 
-        f"🕒 Monitor Checked At:\n"
-        f"{monitor_checked_at}\n\n"
+        f"🕒 Current Monitor Checked At:\n"
+        f"{current_monitor_checked_at}\n\n"
 
-        f"📌 Previous Timestamp:\n"
-        f"{previous_timestamp}\n\n"
+        f"🕒 Last Monitor Checked At:\n"
+        f"{last_monitor_checked_at}\n\n"
 
-        f"📌 Latest Timestamp:\n"
-        f"{current_timestamp}\n\n"
+        f"📌 Previous Update Timestamp:\n"
+        f"{previous_update_timestamp}\n\n"
+
+        f"📌 Latest Update Timestamp:\n"
+        f"{latest_update_timestamp}\n\n"
 
         + "\n\n".join(slack_logs)
     )
@@ -474,23 +412,29 @@ else:
 
         "No new updates detected.\n\n"
 
-        f"🕒 Monitor Checked At:\n"
-        f"{monitor_checked_at}\n\n"
+        f"🕒 Current Monitor Checked At:\n"
+        f"{current_monitor_checked_at}\n\n"
 
-        f"📌 Latest Timestamp:\n"
-        f"{current_timestamp}"
+        f"🕒 Last Monitor Checked At:\n"
+        f"{last_monitor_checked_at}\n\n"
+
+        f"📌 Latest Update Timestamp:\n"
+        f"{latest_update_timestamp}"
     )
 
 last_checked_data = {
 
-    "monitor_checked_at":
-    monitor_checked_at,
+    "current_monitor_checked_at":
+    current_monitor_checked_at,
 
-    "previous_timestamp":
-    previous_timestamp,
+    "last_monitor_checked_at":
+    last_monitor_checked_at,
 
-    "latest_timestamp":
-    current_timestamp,
+    "previous_update_timestamp":
+    previous_update_timestamp,
+
+    "latest_update_timestamp":
+    latest_update_timestamp,
 
     "updates_detected":
     updates_detected
@@ -503,13 +447,16 @@ save_last_checked_log(
 save_processing_history({
 
     "checked_at":
-    monitor_checked_at,
+    current_monitor_checked_at,
 
-    "previous_timestamp":
-    previous_timestamp,
+    "last_monitor_checked_at":
+    last_monitor_checked_at,
 
-    "latest_timestamp":
-    current_timestamp,
+    "previous_update_timestamp":
+    previous_update_timestamp,
+
+    "latest_update_timestamp":
+    latest_update_timestamp,
 
     "updates_detected":
     updates_detected,
