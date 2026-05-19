@@ -102,17 +102,11 @@ def load_previous_state():
 
         return state
 
-    except:
+    except Exception:
 
-        default_state = {
-
+        return {
             "latest_timestamp": None
-
         }
-
-        save_current_state(default_state)
-
-        return default_state
 
 def save_current_state(state):
 
@@ -158,7 +152,7 @@ def save_processing_history(data):
 
 previous_state = load_previous_state()
 
-previous_timestamp = previous_state.get(
+saved_latest_timestamp = previous_state.get(
     "latest_timestamp"
 )
 
@@ -166,7 +160,7 @@ monitor_checked_at = get_ist_string()
 
 print(
     f"[{monitor_checked_at}] "
-    f"Checking ETL monitoring logs..."
+    f"Checking monitoring logs..."
 )
 
 response = s3_client.list_objects_v2(
@@ -186,6 +180,9 @@ for obj in all_objects:
     key = obj["Key"]
 
     parts = key.split("/")
+
+    # VALID:
+    # monitor/20260519_180000/file.json
 
     if len(parts) >= 3:
 
@@ -208,29 +205,43 @@ print(
     f"{timestamp_folders}"
 )
 
-if not timestamp_folders:
+previous_timestamp = saved_latest_timestamp
 
-    current_timestamp = None
+current_timestamp = None
 
-else:
+new_timestamps = []
 
-    current_timestamp = timestamp_folders[-1]
+# FIRST RUN
 
-print(
-    f"Previous timestamp: "
-    f"{previous_timestamp}"
-)
+if saved_latest_timestamp is None:
 
-print(
-    f"Current timestamp: "
-    f"{current_timestamp}"
-)
+    if len(timestamp_folders) >= 2:
 
-# ONLY PROCESS NEW TIMESTAMPS
+        previous_timestamp = (
+            timestamp_folders[-2]
+        )
 
-if previous_timestamp is None:
+        current_timestamp = (
+            timestamp_folders[-1]
+        )
 
-    new_timestamps = timestamp_folders
+        new_timestamps = [
+            current_timestamp
+        ]
+
+    elif len(timestamp_folders) == 1:
+
+        previous_timestamp = (
+            timestamp_folders[0]
+        )
+
+        current_timestamp = (
+            timestamp_folders[0]
+        )
+
+        new_timestamps = [
+            current_timestamp
+        ]
 
 else:
 
@@ -238,8 +249,14 @@ else:
 
         ts for ts in timestamp_folders
 
-        if ts > previous_timestamp
+        if ts > saved_latest_timestamp
     ]
+
+    if new_timestamps:
+
+        current_timestamp = (
+            sorted(new_timestamps)[-1]
+        )
 
 updates_detected = len(new_timestamps) > 0
 
@@ -250,7 +267,7 @@ processed_rows = []
 if updates_detected:
 
     print(
-        f"New timestamps found: "
+        f"Processing timestamps: "
         f"{new_timestamps}"
     )
 
@@ -322,6 +339,21 @@ if updates_detected:
                 0
             )
 
+            new_records = monitoring_data.get(
+                "new_records",
+                []
+            )
+
+            duplicate_records = monitoring_data.get(
+                "duplicate_records",
+                []
+            )
+
+            historical_records = monitoring_data.get(
+                "historical_records",
+                []
+            )
+
             log_message = (
 
                 f"\n📊 TABLE: {table_name}"
@@ -345,9 +377,47 @@ if updates_detected:
                 f"{historical_count}"
             )
 
-            slack_logs.append(log_message)
+            if new_records:
 
-    # SAVE NEWEST TIMESTAMP
+                log_message += (
+                    "\n\n🆕 NEW RECORDS:\n"
+                )
+
+                for row in new_records[:5]:
+
+                    processed_rows.append(row)
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            if duplicate_records:
+
+                log_message += (
+                    "\n♻ DUPLICATE RECORDS:\n"
+                )
+
+                for row in duplicate_records[:5]:
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            if historical_records:
+
+                log_message += (
+                    "\n🕘 HISTORICAL RECORDS:\n"
+                )
+
+                for row in historical_records[:5]:
+
+                    processed_rows.append(row)
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            slack_logs.append(log_message)
 
     save_current_state({
 
@@ -373,6 +443,8 @@ if updates_detected:
     )
 
 else:
+
+    current_timestamp = previous_timestamp
 
     slack_text = (
 
@@ -418,7 +490,10 @@ save_processing_history({
     current_timestamp,
 
     "updates_detected":
-    updates_detected
+    updates_detected,
+
+    "processed_rows":
+    processed_rows
 })
 
 slack_message = {
