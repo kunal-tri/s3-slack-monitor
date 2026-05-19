@@ -309,31 +309,31 @@ if updates_detected:
 
             log_message = (
 
-                f"\n📊 TABLE: {table_name}"
+                f"\nTABLE: {table_name}"
 
-                f"\n🕒 ETL Run Time: "
+                f"\nETL Run Time: "
                 f"{run_timestamp}"
 
-                f"\n📁 Update Timestamp Folder: "
+                f"\nUpdate Timestamp Folder: "
                 f"{timestamp_folder}"
 
-                f"\n📦 Total Rows: "
+                f"\nTotal Rows: "
                 f"{total_rows}"
 
-                f"\n🆕 New Rows Inserted: "
+                f"\nNew Rows Inserted: "
                 f"{new_count}"
 
-                f"\n♻ Duplicate Rows Skipped: "
+                f"\nDuplicate Rows Skipped: "
                 f"{duplicate_count}"
 
-                f"\n🕘 Historical Rows Created: "
+                f"\nHistorical Rows Created: "
                 f"{historical_count}"
             )
 
             if new_records:
 
                 log_message += (
-                    "\n\n🆕 NEW RECORDS:\n"
+                    "\n\nNEW RECORDS:\n"
                 )
 
                 for row in new_records[:5]:
@@ -347,7 +347,7 @@ if updates_detected:
             if duplicate_records:
 
                 log_message += (
-                    "\n♻ DUPLICATE RECORDS:\n"
+                    "\nDUPLICATE RECORDS:\n"
                 )
 
                 for row in duplicate_records[:5]:
@@ -359,7 +359,7 @@ if updates_detected:
             if historical_records:
 
                 log_message += (
-                    "\n🕘 HISTORICAL RECORDS:\n"
+                    "\nHISTORICAL RECORDS:\n"
                 )
 
                 for row in historical_records[:5]:
@@ -387,18 +387,18 @@ if updates_detected:
 
     slack_text = (
 
-        "*🚨 ETL PIPELINE UPDATE DETECTED*\n\n"
+        "*ETL PIPELINE UPDATE DETECTED*\n\n"
 
-        f"🕒 Current Monitor Checked At:\n"
+        f"Current Monitor Checked At:\n"
         f"{current_monitor_checked_at}\n\n"
 
-        f"🕒 Last Monitor Checked At:\n"
+        f"Last Monitor Checked At:\n"
         f"{last_monitor_checked_at}\n\n"
 
-        f"📌 Previous Update Timestamp:\n"
+        f"Previous Update Timestamp:\n"
         f"{previous_update_timestamp}\n\n"
 
-        f"📌 Latest Update Timestamp:\n"
+        f"Latest Update Timestamp:\n"
         f"{latest_update_timestamp}\n\n"
 
         + "\n\n".join(slack_logs)
@@ -408,17 +408,17 @@ else:
 
     slack_text = (
 
-        "*✅ ETL MONITOR STATUS*\n\n"
+        "*ETL MONITOR STATUS*\n\n"
 
         "No new updates detected.\n\n"
 
-        f"🕒 Current Monitor Checked At:\n"
+        f"Current Monitor Checked At:\n"
         f"{current_monitor_checked_at}\n\n"
 
-        f"🕒 Last Monitor Checked At:\n"
+        f"Last Monitor Checked At:\n"
         f"{last_monitor_checked_at}\n\n"
 
-        f"📌 Latest Update Timestamp:\n"
+        f"Latest Update Timestamp:\n"
         f"{latest_update_timestamp}"
     )
 
