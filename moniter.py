@@ -6,12 +6,15 @@ import requests
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 BASE_DIR = Path(__file__).resolve().parent
 
 ENV_PATH = BASE_DIR / ".env"
 
 load_dotenv(dotenv_path=ENV_PATH)
+
+IST = ZoneInfo("Asia/Kolkata")
 
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 
@@ -56,12 +59,26 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-STATE_KEY = "monitor/monitor_state.json"
+STATE_KEY = "monitor/state/monitor_state.json"
 
 LAST_CHECKED_KEY = (
     "monitor/last_checked/"
     "last_checked.json"
 )
+
+PROCESS_LOG_KEY = (
+    "monitor/history/"
+)
+
+def get_ist_time():
+
+    return datetime.now(IST)
+
+def get_ist_string():
+
+    return get_ist_time().strftime(
+        "%Y-%m-%d %H:%M:%S IST"
+    )
 
 def load_previous_state():
 
@@ -80,9 +97,17 @@ def load_previous_state():
 
     except:
 
-        return {
-            "last_processed_timestamp": None
+        default_state = {
+
+            "last_processed_timestamp":
+            "00000000_000000",
+
+            "processed_timestamps": []
         }
+
+        save_current_state(default_state)
+
+        return default_state
 
 def save_current_state(state):
 
@@ -106,24 +131,54 @@ def save_last_checked_log(data):
         )
     )
 
+def save_processing_history(data):
+
+    timestamp = datetime.now(
+        IST
+    ).strftime("%Y%m%d_%H%M%S")
+
+    history_key = (
+        f"{PROCESS_LOG_KEY}"
+        f"{timestamp}.json"
+    )
+
+    s3_client.put_object(
+        Bucket=BUCKET_NAME,
+        Key=history_key,
+        Body=json.dumps(
+            data,
+            indent=4
+        )
+    )
+
 previous_state = load_previous_state()
 
 last_processed_timestamp = previous_state.get(
-    "last_processed_timestamp"
+    "last_processed_timestamp",
+    "00000000_000000"
 )
 
-monitor_checked_at = datetime.now().strftime(
-    "%Y-%m-%d %H:%M:%S"
+processed_timestamps = previous_state.get(
+    "processed_timestamps",
+    []
 )
 
-print("Fetching monitoring logs...")
+monitor_checked_at = get_ist_string()
+
+print(
+    f"[{monitor_checked_at}] "
+    f"Fetching monitoring logs..."
+)
 
 response = s3_client.list_objects_v2(
     Bucket=BUCKET_NAME,
     Prefix="monitor/"
 )
 
-all_objects = response.get("Contents", [])
+all_objects = response.get(
+    "Contents",
+    []
+)
 
 timestamp_folders = set()
 
@@ -137,179 +192,203 @@ for obj in all_objects:
 
         folder_name = parts[1]
 
-        if (
-            folder_name != "last_checked"
-            and
-            folder_name != "monitor_state.json"
-        ):
+        ignored_folders = [
+            "last_checked",
+            "state",
+            "history"
+        ]
 
-            timestamp_folders.add(folder_name)
+        if folder_name not in ignored_folders:
 
-timestamp_folders = sorted(timestamp_folders)
+            timestamp_folders.add(
+                folder_name
+            )
 
-latest_timestamp = None
-
-if timestamp_folders:
-
-    latest_timestamp = timestamp_folders[-1]
-
-print(
-    f"Latest timestamp found: "
-    f"{latest_timestamp}"
+timestamp_folders = sorted(
+    timestamp_folders
 )
+
+new_timestamps = [
+
+    ts for ts in timestamp_folders
+
+    if ts > last_processed_timestamp
+]
 
 updates_detected = False
 
 slack_logs = []
 
-if latest_timestamp != last_processed_timestamp:
+processed_rows = []
+
+latest_processed_timestamp = (
+    last_processed_timestamp
+)
+
+if new_timestamps:
 
     updates_detected = True
 
-    print("New monitoring logs detected")
-
-    latest_prefix = (
-        f"monitor/{latest_timestamp}/"
+    print(
+        f"New timestamps found: "
+        f"{new_timestamps}"
     )
 
-    latest_response = s3_client.list_objects_v2(
-        Bucket=BUCKET_NAME,
-        Prefix=latest_prefix
-    )
+    for timestamp_folder in new_timestamps:
 
-    latest_objects = latest_response.get(
-        "Contents",
-        []
-    )
-
-    for obj in latest_objects:
-
-        key = obj["Key"]
-
-        if not key.endswith(".json"):
-
-            continue
-
-        file_response = s3_client.get_object(
-            Bucket=BUCKET_NAME,
-            Key=key
+        latest_processed_timestamp = (
+            timestamp_folder
         )
 
-        monitoring_data = json.loads(
-            file_response["Body"]
-            .read()
-            .decode("utf-8")
+        latest_prefix = (
+            f"monitor/"
+            f"{timestamp_folder}/"
         )
 
-        table_name = monitoring_data.get(
-            "table_name",
-            "unknown"
+        latest_response = (
+            s3_client.list_objects_v2(
+                Bucket=BUCKET_NAME,
+                Prefix=latest_prefix
+            )
         )
 
-        run_timestamp = monitoring_data.get(
-            "run_timestamp",
-            "unknown"
-        )
-
-        total_rows = monitoring_data.get(
-            "total_rows_after_update",
-            0
-        )
-
-        new_count = monitoring_data.get(
-            "new_records_count",
-            0
-        )
-
-        duplicate_count = monitoring_data.get(
-            "duplicate_records_count",
-            0
-        )
-
-        historical_count = monitoring_data.get(
-            "historical_records_count",
-            0
-        )
-
-        new_records = monitoring_data.get(
-            "new_records",
+        latest_objects = latest_response.get(
+            "Contents",
             []
         )
 
-        duplicate_records = monitoring_data.get(
-            "duplicate_records",
-            []
-        )
+        for obj in latest_objects:
 
-        historical_records = monitoring_data.get(
-            "historical_records",
-            []
-        )
+            key = obj["Key"]
 
-        log_message = (
+            if not key.endswith(".json"):
 
-            f"\n📊 TABLE: {table_name}"
+                continue
 
-            f"\n🕒 ETL Run Time: "
-            f"{run_timestamp}"
-
-            f"\n📦 Total Rows: "
-            f"{total_rows}"
-
-            f"\n🆕 New Rows Inserted: "
-            f"{new_count}"
-
-            f"\n♻ Duplicate Rows Skipped: "
-            f"{duplicate_count}"
-
-            f"\n🕘 Historical Rows Created: "
-            f"{historical_count}"
-        )
-
-        if new_records:
-
-            log_message += (
-                "\n\n🆕 NEW RECORDS:\n"
+            file_response = s3_client.get_object(
+                Bucket=BUCKET_NAME,
+                Key=key
             )
 
-            for row in new_records[:5]:
-
-                log_message += (
-                    f"{json.dumps(row, default=str)}\n"
-                )
-
-        if duplicate_records:
-
-            log_message += (
-                "\n♻ DUPLICATE RECORDS:\n"
+            monitoring_data = json.loads(
+                file_response["Body"]
+                .read()
+                .decode("utf-8")
             )
 
-            for row in duplicate_records[:5]:
-
-                log_message += (
-                    f"{json.dumps(row, default=str)}\n"
-                )
-
-        if historical_records:
-
-            log_message += (
-                "\n🕘 HISTORICAL RECORDS:\n"
+            table_name = monitoring_data.get(
+                "table_name",
+                "unknown"
             )
 
-            for row in historical_records[:5]:
+            run_timestamp = monitoring_data.get(
+                "run_timestamp",
+                "unknown"
+            )
+
+            total_rows = monitoring_data.get(
+                "total_rows_after_update",
+                0
+            )
+
+            new_count = monitoring_data.get(
+                "new_records_count",
+                0
+            )
+
+            duplicate_count = monitoring_data.get(
+                "duplicate_records_count",
+                0
+            )
+
+            historical_count = monitoring_data.get(
+                "historical_records_count",
+                0
+            )
+
+            new_records = monitoring_data.get(
+                "new_records",
+                []
+            )
+
+            duplicate_records = monitoring_data.get(
+                "duplicate_records",
+                []
+            )
+
+            historical_records = monitoring_data.get(
+                "historical_records",
+                []
+            )
+
+            log_message = (
+
+                f"\n📊 TABLE: {table_name}"
+
+                f"\n🕒 ETL Run Time: "
+                f"{run_timestamp}"
+
+                f"\n📁 Timestamp Folder: "
+                f"{timestamp_folder}"
+
+                f"\n📦 Total Rows: "
+                f"{total_rows}"
+
+                f"\n🆕 New Rows Inserted: "
+                f"{new_count}"
+
+                f"\n♻ Duplicate Rows Skipped: "
+                f"{duplicate_count}"
+
+                f"\n🕘 Historical Rows Created: "
+                f"{historical_count}"
+            )
+
+            if new_records:
 
                 log_message += (
-                    f"{json.dumps(row, default=str)}\n"
+                    "\n\n🆕 NEW RECORDS:\n"
                 )
 
-        slack_logs.append(log_message)
+                for row in new_records[:5]:
+
+                    processed_rows.append(row)
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            if duplicate_records:
+
+                log_message += (
+                    "\n♻ DUPLICATE RECORDS:\n"
+                )
+
+                for row in duplicate_records[:5]:
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            if historical_records:
+
+                log_message += (
+                    "\n🕘 HISTORICAL RECORDS:\n"
+                )
+
+                for row in historical_records[:5]:
+
+                    processed_rows.append(row)
+
+                    log_message += (
+                        f"{json.dumps(row, default=str)}\n"
+                    )
+
+            slack_logs.append(log_message)
 
     slack_text = (
 
         "*🚨 ETL PIPELINE UPDATE DETECTED*\n\n"
-
-        f"📁 Monitoring Timestamp Folder:\n"
-        f"{latest_timestamp}\n\n"
 
         f"🕒 Monitor Checked At:\n"
         f"{monitor_checked_at}\n\n"
@@ -317,19 +396,29 @@ if latest_timestamp != last_processed_timestamp:
         f"📌 Previous Processed Timestamp:\n"
         f"{last_processed_timestamp}\n\n"
 
+        f"📌 Latest Processed Timestamp:\n"
+        f"{latest_processed_timestamp}\n\n"
+
         + "\n\n".join(slack_logs)
+    )
+
+    processed_timestamps.extend(
+        new_timestamps
     )
 
     save_current_state({
 
         "last_processed_timestamp":
-        latest_timestamp
+        latest_processed_timestamp,
+
+        "processed_timestamps":
+        processed_timestamps
 
     })
 
 else:
 
-    print("No new monitoring logs detected")
+    print("No new updates detected")
 
     slack_text = (
 
@@ -341,10 +430,7 @@ else:
         f"{monitor_checked_at}\n\n"
 
         f"📌 Last Processed Timestamp:\n"
-        f"{last_processed_timestamp}\n\n"
-
-        f"📁 Latest Monitoring Folder:\n"
-        f"{latest_timestamp}"
+        f"{last_processed_timestamp}"
     )
 
 last_checked_data = {
@@ -352,19 +438,34 @@ last_checked_data = {
     "monitor_checked_at":
     monitor_checked_at,
 
-    "latest_etl_timestamp":
-    latest_timestamp,
+    "latest_processed_timestamp":
+    latest_processed_timestamp,
 
     "updates_detected":
     updates_detected,
 
-    "last_processed_timestamp":
-    last_processed_timestamp
+    "processed_rows_count":
+    len(processed_rows)
 }
 
 save_last_checked_log(
     last_checked_data
 )
+
+save_processing_history({
+
+    "checked_at":
+    monitor_checked_at,
+
+    "latest_processed_timestamp":
+    latest_processed_timestamp,
+
+    "updates_detected":
+    updates_detected,
+
+    "processed_rows":
+    processed_rows
+})
 
 slack_message = {
     "text": slack_text
