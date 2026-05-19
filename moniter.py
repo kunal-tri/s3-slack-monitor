@@ -112,6 +112,10 @@ last_processed_timestamp = previous_state.get(
     "last_processed_timestamp"
 )
 
+monitor_checked_at = datetime.now().strftime(
+    "%Y-%m-%d %H:%M:%S"
+)
+
 print("Fetching monitoring logs...")
 
 response = s3_client.list_objects_v2(
@@ -243,13 +247,21 @@ if latest_timestamp != last_processed_timestamp:
         )
 
         log_message = (
+
             f"\n📊 TABLE: {table_name}"
-            f"\n🕒 Run Time: {run_timestamp}"
-            f"\n📦 Total Rows: {total_rows}"
+
+            f"\n🕒 ETL Run Time: "
+            f"{run_timestamp}"
+
+            f"\n📦 Total Rows: "
+            f"{total_rows}"
+
             f"\n🆕 New Rows Inserted: "
             f"{new_count}"
+
             f"\n♻ Duplicate Rows Skipped: "
             f"{duplicate_count}"
+
             f"\n🕘 Historical Rows Created: "
             f"{historical_count}"
         )
@@ -299,6 +311,12 @@ if latest_timestamp != last_processed_timestamp:
         f"📁 Monitoring Timestamp Folder:\n"
         f"{latest_timestamp}\n\n"
 
+        f"🕒 Monitor Checked At:\n"
+        f"{monitor_checked_at}\n\n"
+
+        f"📌 Previous Processed Timestamp:\n"
+        f"{last_processed_timestamp}\n\n"
+
         + "\n\n".join(slack_logs)
     )
 
@@ -314,19 +332,25 @@ else:
     print("No new monitoring logs detected")
 
     slack_text = (
+
         "*✅ ETL MONITOR STATUS*\n\n"
+
         "No new updates detected.\n\n"
 
-        f"Last Checked ETL Timestamp:\n"
-        f"{last_processed_timestamp}"
+        f"🕒 Monitor Checked At:\n"
+        f"{monitor_checked_at}\n\n"
+
+        f"📌 Last Processed Timestamp:\n"
+        f"{last_processed_timestamp}\n\n"
+
+        f"📁 Latest Monitoring Folder:\n"
+        f"{latest_timestamp}"
     )
 
 last_checked_data = {
 
     "monitor_checked_at":
-    datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    ),
+    monitor_checked_at,
 
     "latest_etl_timestamp":
     latest_timestamp,
