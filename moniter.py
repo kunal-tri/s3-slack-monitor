@@ -71,6 +71,10 @@ PROCESS_LOG_KEY = (
     "monitor/history/"
 )
 
+TIMESTAMP_REGEX = re.compile(
+    r"^\d{8}_\d{6}$"
+)
+
 def get_ist_time():
 
     return datetime.now(IST)
@@ -96,35 +100,13 @@ def load_previous_state():
             .decode("utf-8")
         )
 
-        if (
-            "last_processed_timestamp"
-            not in state
-        ):
-
-            state[
-                "last_processed_timestamp"
-            ] = None
-
-        if (
-            "processed_timestamps"
-            not in state
-        ):
-
-            state[
-                "processed_timestamps"
-            ] = []
-
         return state
 
-    except Exception:
+    except:
 
         default_state = {
 
-            "last_processed_timestamp":
-            None,
-
-            "processed_timestamps":
-            []
+            "latest_timestamp": None
 
         }
 
@@ -176,20 +158,15 @@ def save_processing_history(data):
 
 previous_state = load_previous_state()
 
-last_processed_timestamp = previous_state.get(
-    "last_processed_timestamp"
-)
-
-processed_timestamps = previous_state.get(
-    "processed_timestamps",
-    []
+previous_timestamp = previous_state.get(
+    "latest_timestamp"
 )
 
 monitor_checked_at = get_ist_string()
 
 print(
     f"[{monitor_checked_at}] "
-    f"Fetching monitoring logs..."
+    f"Checking ETL monitoring logs..."
 )
 
 response = s3_client.list_objects_v2(
@@ -204,24 +181,17 @@ all_objects = response.get(
 
 timestamp_folders = set()
 
-timestamp_pattern = re.compile(
-    r"^\d{8}_\d{6}$"
-)
-
 for obj in all_objects:
 
     key = obj["Key"]
 
     parts = key.split("/")
 
-    # VALID FORMAT:
-    # monitor/20260519_153000/file.json
-
     if len(parts) >= 3:
 
         folder_name = parts[1]
 
-        if timestamp_pattern.match(
+        if TIMESTAMP_REGEX.match(
             folder_name
         ):
 
@@ -234,13 +204,31 @@ timestamp_folders = sorted(
 )
 
 print(
-    f"Valid timestamp folders found: "
+    f"Detected timestamps: "
     f"{timestamp_folders}"
 )
 
-# FIRST RUN
+if not timestamp_folders:
 
-if last_processed_timestamp is None:
+    current_timestamp = None
+
+else:
+
+    current_timestamp = timestamp_folders[-1]
+
+print(
+    f"Previous timestamp: "
+    f"{previous_timestamp}"
+)
+
+print(
+    f"Current timestamp: "
+    f"{current_timestamp}"
+)
+
+# ONLY PROCESS NEW TIMESTAMPS
+
+if previous_timestamp is None:
 
     new_timestamps = timestamp_folders
 
@@ -250,24 +238,16 @@ else:
 
         ts for ts in timestamp_folders
 
-        if ts > last_processed_timestamp
+        if ts > previous_timestamp
     ]
 
-updates_detected = False
+updates_detected = len(new_timestamps) > 0
 
 slack_logs = []
 
 processed_rows = []
 
-latest_processed_timestamp = None
-
-if new_timestamps:
-
-    updates_detected = True
-
-    latest_processed_timestamp = (
-        sorted(new_timestamps)[-1]
-    )
+if updates_detected:
 
     print(
         f"New timestamps found: "
@@ -342,21 +322,6 @@ if new_timestamps:
                 0
             )
 
-            new_records = monitoring_data.get(
-                "new_records",
-                []
-            )
-
-            duplicate_records = monitoring_data.get(
-                "duplicate_records",
-                []
-            )
-
-            historical_records = monitoring_data.get(
-                "historical_records",
-                []
-            )
-
             log_message = (
 
                 f"\n📊 TABLE: {table_name}"
@@ -380,59 +345,14 @@ if new_timestamps:
                 f"{historical_count}"
             )
 
-            if new_records:
-
-                log_message += (
-                    "\n\n🆕 NEW RECORDS:\n"
-                )
-
-                for row in new_records[:5]:
-
-                    processed_rows.append(row)
-
-                    log_message += (
-                        f"{json.dumps(row, default=str)}\n"
-                    )
-
-            if duplicate_records:
-
-                log_message += (
-                    "\n♻ DUPLICATE RECORDS:\n"
-                )
-
-                for row in duplicate_records[:5]:
-
-                    log_message += (
-                        f"{json.dumps(row, default=str)}\n"
-                    )
-
-            if historical_records:
-
-                log_message += (
-                    "\n🕘 HISTORICAL RECORDS:\n"
-                )
-
-                for row in historical_records[:5]:
-
-                    processed_rows.append(row)
-
-                    log_message += (
-                        f"{json.dumps(row, default=str)}\n"
-                    )
-
             slack_logs.append(log_message)
 
-    processed_timestamps.extend(
-        new_timestamps
-    )
+    # SAVE NEWEST TIMESTAMP
 
     save_current_state({
 
-        "last_processed_timestamp":
-        latest_processed_timestamp,
-
-        "processed_timestamps":
-        processed_timestamps
+        "latest_timestamp":
+        current_timestamp
 
     })
 
@@ -443,22 +363,16 @@ if new_timestamps:
         f"🕒 Monitor Checked At:\n"
         f"{monitor_checked_at}\n\n"
 
-        f"📌 Previous Processed Timestamp:\n"
-        f"{last_processed_timestamp}\n\n"
+        f"📌 Previous Timestamp:\n"
+        f"{previous_timestamp}\n\n"
 
-        f"📌 Latest Processed Timestamp:\n"
-        f"{latest_processed_timestamp}\n\n"
+        f"📌 Latest Timestamp:\n"
+        f"{current_timestamp}\n\n"
 
         + "\n\n".join(slack_logs)
     )
 
 else:
-
-    latest_processed_timestamp = (
-        last_processed_timestamp
-    )
-
-    print("No new updates detected")
 
     slack_text = (
 
@@ -469,8 +383,8 @@ else:
         f"🕒 Monitor Checked At:\n"
         f"{monitor_checked_at}\n\n"
 
-        f"📌 Last Processed Timestamp:\n"
-        f"{latest_processed_timestamp}"
+        f"📌 Latest Timestamp:\n"
+        f"{current_timestamp}"
     )
 
 last_checked_data = {
@@ -478,14 +392,14 @@ last_checked_data = {
     "monitor_checked_at":
     monitor_checked_at,
 
-    "latest_processed_timestamp":
-    latest_processed_timestamp,
+    "previous_timestamp":
+    previous_timestamp,
+
+    "latest_timestamp":
+    current_timestamp,
 
     "updates_detected":
-    updates_detected,
-
-    "processed_rows_count":
-    len(processed_rows)
+    updates_detected
 }
 
 save_last_checked_log(
@@ -497,14 +411,14 @@ save_processing_history({
     "checked_at":
     monitor_checked_at,
 
-    "latest_processed_timestamp":
-    latest_processed_timestamp,
+    "previous_timestamp":
+    previous_timestamp,
+
+    "latest_timestamp":
+    current_timestamp,
 
     "updates_detected":
-    updates_detected,
-
-    "processed_rows":
-    processed_rows
+    updates_detected
 })
 
 slack_message = {
