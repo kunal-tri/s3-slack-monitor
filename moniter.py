@@ -4,6 +4,7 @@ import boto3
 import requests
 
 from pathlib import Path
+from datetime import datetime
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,6 +58,11 @@ s3_client = boto3.client(
 
 STATE_KEY = "monitor/monitor_state.json"
 
+LAST_CHECKED_KEY = (
+    "monitor/last_checked/"
+    "last_checked.json"
+)
+
 def load_previous_state():
 
     try:
@@ -89,6 +95,17 @@ def save_current_state(state):
         )
     )
 
+def save_last_checked_log(data):
+
+    s3_client.put_object(
+        Bucket=BUCKET_NAME,
+        Key=LAST_CHECKED_KEY,
+        Body=json.dumps(
+            data,
+            indent=4
+        )
+    )
+
 previous_state = load_previous_state()
 
 last_processed_timestamp = previous_state.get(
@@ -114,7 +131,15 @@ for obj in all_objects:
 
     if len(parts) >= 2:
 
-        timestamp_folders.add(parts[1])
+        folder_name = parts[1]
+
+        if (
+            folder_name != "last_checked"
+            and
+            folder_name != "monitor_state.json"
+        ):
+
+            timestamp_folders.add(folder_name)
 
 timestamp_folders = sorted(timestamp_folders)
 
@@ -124,7 +149,10 @@ if timestamp_folders:
 
     latest_timestamp = timestamp_folders[-1]
 
-print(f"Latest timestamp found: {latest_timestamp}")
+print(
+    f"Latest timestamp found: "
+    f"{latest_timestamp}"
+)
 
 updates_detected = False
 
@@ -136,7 +164,9 @@ if latest_timestamp != last_processed_timestamp:
 
     print("New monitoring logs detected")
 
-    latest_prefix = f"monitor/{latest_timestamp}/"
+    latest_prefix = (
+        f"monitor/{latest_timestamp}/"
+    )
 
     latest_response = s3_client.list_objects_v2(
         Bucket=BUCKET_NAME,
@@ -216,7 +246,8 @@ if latest_timestamp != last_processed_timestamp:
             f"\n📊 TABLE: {table_name}"
             f"\n🕒 Run Time: {run_timestamp}"
             f"\n📦 Total Rows: {total_rows}"
-            f"\n🆕 New Rows Inserted: {new_count}"
+            f"\n🆕 New Rows Inserted: "
+            f"{new_count}"
             f"\n♻ Duplicate Rows Skipped: "
             f"{duplicate_count}"
             f"\n🕘 Historical Rows Created: "
@@ -225,7 +256,9 @@ if latest_timestamp != last_processed_timestamp:
 
         if new_records:
 
-            log_message += "\n\n🆕 NEW RECORDS:\n"
+            log_message += (
+                "\n\n🆕 NEW RECORDS:\n"
+            )
 
             for row in new_records[:5]:
 
@@ -284,9 +317,30 @@ else:
         "*✅ ETL MONITOR STATUS*\n\n"
         "No new updates detected.\n\n"
 
-        f"Last Checked Timestamp:\n"
+        f"Last Checked ETL Timestamp:\n"
         f"{last_processed_timestamp}"
     )
+
+last_checked_data = {
+
+    "monitor_checked_at":
+    datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    ),
+
+    "latest_etl_timestamp":
+    latest_timestamp,
+
+    "updates_detected":
+    updates_detected,
+
+    "last_processed_timestamp":
+    last_processed_timestamp
+}
+
+save_last_checked_log(
+    last_checked_data
+)
 
 slack_message = {
     "text": slack_text
